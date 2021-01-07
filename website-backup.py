@@ -64,6 +64,8 @@ backup_list = [
   , 'user'      : '<user>'
   , 'password'  : '<password>'
   , 'local_dir' : 'website'
+  , 'day_retain_monthly_archives' : 120 # keep monthly archives from the last 120 days
+  , 'excludes' : '--exclude ^\\dev/ --exclude ^\\bin/' # this excludes the root dev/ and bin/ folder
   },
   { 'title'     : 'Simple FTP backup with exotic port'
   , 'type'      : 'FTP'
@@ -73,6 +75,8 @@ backup_list = [
   , 'user'      : '<user>'
   , 'password'  : '<password>'
   , 'local_dir' : 'kevin'
+  , 'day_retain_monthly_archives' : -1 # default, do not delete old monthly archives!
+  , 'excludes' : ''
   },
 
 ### FTPs examples
@@ -83,6 +87,8 @@ backup_list = [
   , 'user'      : '<user>'
   , 'password'  : '<password>'
   , 'local_dir' : 'ftps-test'
+  , 'day_retain_monthly_archives' : 120
+  , 'excludes' : ''
   },
 
 ### SSH examples
@@ -94,6 +100,7 @@ backup_list = [
   , 'user'      : '<user>'
   , 'password'  : '<password>'
   , 'local_dir' : 'ssh+password-test'
+  , 'day_retain_monthly_archives' : 120
   },
   { 'title'     : 'Password-less SSH backup'
   , 'type'      : 'SSH'
@@ -101,6 +108,7 @@ backup_list = [
   , 'remote_dir': '/var/lib/www/test'
   , 'user'      : '<user>'
   , 'local_dir' : 'ssh-nopassord-test'
+  , 'day_retain_monthly_archives' : 120
   },
 
 ### MySQL examples
@@ -114,6 +122,7 @@ backup_list = [
   , 'db_host'   : 'localhost'
   , 'db_name'   : 'mysqlxxxx'
   , 'local_dir' : 'mysqldump+ssh-test'
+  , 'day_retain_monthly_archives' : 120
   },
   { 'title'     : 'MySQL dump over password-less SSH of all databases'
   , 'type'      : 'mysqldump+ssh'
@@ -123,6 +132,7 @@ backup_list = [
   , 'db_pass'   : '<mysql-password>'
   , 'db_host'   : 'localhost'
   , 'local_dir' : 'mysqldump+ssh-test'
+  , 'day_retain_monthly_archives' : 120
   },
   { 'title'     : 'Direct MySQL dump with exotic MySQL server port'
   , 'type'      : 'mysqldump'
@@ -131,6 +141,7 @@ backup_list = [
   , 'db_host'   : 'sql.machine.com'
   , 'db_port'   : 9999
   , 'local_dir' : 'mysqldump-test'
+  , 'day_retain_monthly_archives' : 120
   },
 ]
 
@@ -146,6 +157,7 @@ from urllib   import quote_plus as qp
 from os       import makedirs, mkdir, remove, system, rmdir
 from os.path  import abspath, exists, isfile, sep
 from os.path  import split as pathsplit
+import os
 
 # Define constants
 SEP              = sep
@@ -372,6 +384,12 @@ def main(verbose=False, dry_run=False):
           makedirs(folder_path)
         print " INFO - '%s' folder created" % folder_path
 
+    try:
+      day_retain_monthly_archives = backup['day_retain_monthly_archives']
+    except KeyError:
+      backup['day_retain_monthly_archives'] = -1; # never delete
+
+    backup['day_retain_monthly_archives'] = int(backup['day_retain_monthly_archives'])
 
     ##########
     # Step 1 - Mirror data with the right tool
@@ -383,6 +401,10 @@ def main(verbose=False, dry_run=False):
 
     ### Mirror remote data via FTP or FTPS
     if backup_type in ['FTP', 'FTPS']:
+      # if excludes is not set then set empty string
+      if not backup['excludes']:
+        backup['excludes'] = ''
+
       # Generate FTP url
       remote_url = "ftp://%s:%s@%s:%s/%s" % ( qp(backup['user'])
                                             , qp(backup['password'])
@@ -395,7 +417,7 @@ def main(verbose=False, dry_run=False):
       if backup_type == 'FTPS':
         secure_options = 'set ftp:ssl-force true && set ftp:ssl-protect-data true && '
       # Get a copy of the remote directory
-      ftp_backup = """lftp -c '%sset ftp:list-options -a && open -e "mirror -e --verbose=3 --parallel=2 . %s" %s'""" % (secure_options, backup_folders['mirror'], remote_url)
+      ftp_backup = """lftp -c '%sset ftp:list-options -a && open -e "mirror %s -e --verbose=3 --parallel=2 . %s" %s'""" % (secure_options, backup['excludes'], backup_folders['mirror'], remote_url)
       run(ftp_backup, verbose, dry_run)
 
 
@@ -524,6 +546,18 @@ def main(verbose=False, dry_run=False):
       run("""rm -vrf "%s" """ % tmp_archives_path, verbose, dry_run)
     else:
       print " INFO - No need to generate archive: previous month already archived"
+
+    # delete old archives
+    if backup['day_retain_monthly_archives'] > -1:
+      deleteCount = 0
+      for f in os.listdir(backup_folders['archives']):
+        if os.stat(os.path.join(backup_folders['archives'], f)).st_mtime < time.time() - backup['day_retain_monthly_archives']*86400: # x days
+          print "delete old backup: %s" % (os.path.join(backup_folders['archives'], f))
+          os.remove(os.path.join(backup_folders['archives'], f))
+          deleteCount += 1
+      print " INFO - deleted %s old archives" % (deleteCount)
+    else:
+      print " INFO - Do not auto delete monthly archives"
 
     # Keep last 32 increments (31 days = 1 month + 1 day)
     print " INFO - Remove increments older than 32 days"
